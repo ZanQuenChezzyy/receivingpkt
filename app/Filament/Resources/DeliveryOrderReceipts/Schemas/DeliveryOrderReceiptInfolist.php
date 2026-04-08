@@ -320,7 +320,7 @@ class DeliveryOrderReceiptInfolist
 
                                 // 2. Agregasi AAC (Menghitung jumlah tiap kategori AAC)
                                 TextEntry::make('aac_summary')
-                                    ->label('Distribusi AAC')
+                                    ->label('Account Assignment')
                                     ->html() // Izinkan HTML agar bisa diformat rapi ke bawah
                                     ->getStateUsing(function ($record) {
                                         $details = $record->deliveryOrderReceiptDetails;
@@ -336,7 +336,7 @@ class DeliveryOrderReceiptInfolist
                                         // Format menjadi list HTML
                                         $output = [];
                                         foreach ($aacCounts as $aac => $count) {
-                                            $label = $aac ?: 'Unknown'; // Jaga-jaga jika ada AAC yang kosong
+                                            $label = $aac ?: 'Tidak Ada'; // Jaga-jaga jika ada AAC yang kosong
                                             $output[] = "<span class='text-sm text-gray-400'>{$label}: {$count}</span>";
                                         }
 
@@ -345,7 +345,7 @@ class DeliveryOrderReceiptInfolist
 
                                 // 3. Agregasi ABC Indicator
                                 TextEntry::make('abc_summary')
-                                    ->label('Distribusi ABC Indicator')
+                                    ->label('ABC Indicator')
                                     ->html()
                                     ->getStateUsing(function ($record) {
                                         $details = $record->deliveryOrderReceiptDetails;
@@ -369,7 +369,7 @@ class DeliveryOrderReceiptInfolist
 
                                         // Jika setelah difilter ternyata tidak ada data sama sekali, tampilkan strip
                                         if (empty($output)) {
-                                            return "<span class='text-sm text-gray-400'>-</span>";
+                                            return "<span class='text-sm text-gray-400'>Tidak ada data</span>";
                                         }
 
                                         return implode('<br>', $output);

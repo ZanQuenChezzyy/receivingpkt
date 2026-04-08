@@ -23,6 +23,9 @@ return new class extends Migration
             $table->string('stage', 100)->nullable();
             $table->string('document_code', 100)->unique()->index();
             $table->string('status', 20)->default('Active')->index();
+            $table->decimal('termin_percentage', 5, 2)->nullable();
+            $table->string('dof_number', 50)->nullable();
+            $table->text('description')->nullable();
             $table->date('post_103')->nullable();
             $table->timestamps();
         });

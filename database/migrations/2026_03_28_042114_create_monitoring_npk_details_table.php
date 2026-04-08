@@ -13,7 +13,7 @@ return new class extends Migration
     {
         Schema::create('monitoring_npk_details', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('npk_monitoring_id')->constrained('monitoring_npks')->onDelete('cascade');
+            $table->foreignId('monitoring_npk_id')->constrained('monitoring_npks')->onDelete('cascade');
             $table->mediumInteger('item_no');
             $table->string('material_code', 20);
             $table->text('description');

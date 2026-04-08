@@ -11,6 +11,7 @@ use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Hidden;
 use Filament\Forms\Components\Repeater;
 use Filament\Forms\Components\Select;
+use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Forms\Components\ToggleButtons;
@@ -105,6 +106,7 @@ class DeliveryOrderReceiptForm
                     if ($state === 'termin') {
                         $set('stage', null);
                         $set('termin_percentage', null);
+                        $set('dof_number', null);
                         self::updateDocumentCode($set, $get);
                     } else {
                         $set('termin_percentage', null);
@@ -113,6 +115,7 @@ class DeliveryOrderReceiptForm
                             $set('stage', 'SURAT-DOF');
                         } else {
                             $set('stage', null);
+                            $set('dof_number', null);
                         }
 
                         self::updateDocumentCode($set, $get);
@@ -320,6 +323,14 @@ class DeliveryOrderReceiptForm
                 ->readOnly(fn (Get $get) => $get('receipt_mode') === 'dof')
                 ->live(onBlur: true)
                 ->afterStateUpdated(fn (Set $set, Get $get) => self::updateDocumentCode($set, $get)),
+
+            TextInput::make('dof_number')
+                ->label('Nomor Surat DOF')
+                ->placeholder('Masukkan Nomor Surat DOF')
+                ->required(fn (Get $get) => $get('receipt_mode') === 'dof') // Wajib jika mode DOF
+                ->visible(fn (Get $get) => $get('receipt_mode') === 'dof')  // Muncul jika mode DOF
+                ->maxLength(50)
+                ->columnSpan(1),
         ]);
     }
 
@@ -350,7 +361,6 @@ class DeliveryOrderReceiptForm
                 ->minValue(1)
                 ->maxValue(100)
                 ->placeholder('Contoh: 20')
-                ->dehydrated(false)
                 ->required()
                 ->rules([
                     fn (Get $get): \Closure => function (string $attribute, $value, \Closure $fail) use ($get) {
@@ -415,6 +425,27 @@ class DeliveryOrderReceiptForm
                 Hidden::make('document_code'),
                 Hidden::make('status')->default('Diterima'),
 
+                Textarea::make('description')
+                    ->label('Keterangan / Deskripsi Tambahan')
+                    ->placeholder('Masukkan keterangan atau catatan khusus untuk DO ini...')
+                    ->autosize()
+                    ->rows(3)
+                    ->columnSpanFull()
+                    ->disabled(fn (Get $get) => empty($get('search_po'))),
+
+                Select::make('created_by')
+                    ->label('Dibuat Oleh')
+                    ->relationship('createdBy', 'name')
+                    ->default(Auth::id())
+                    ->dehydrated()
+                    ->disabled(fn () => Auth::user()->hasRole('Administrator') !== true),
+
+                DatePicker::make('post_103')
+                    ->label('Tanggal Post 103 (SAP)')
+                    ->placeholder('Belum di-Post')
+                    ->native(false)
+                    ->disabled(fn () => Auth::user()->hasRole('Administrator') !== true),
+
                 Grid::make(3)->schema([
                     TextEntry::make('document_code_view')
                         ->label('Kode Dokumen')
@@ -440,23 +471,10 @@ class DeliveryOrderReceiptForm
                         ->color(fn ($state) => $state === 'Draft' ? 'warning' : 'success')
                         ->icon(fn ($state) => $state === 'Draft' ? Heroicon::PencilSquare : Heroicon::CheckCircle),
                 ])->columnSpanFull(),
-
-                Select::make('created_by')
-                    ->label('Dibuat Oleh')
-                    ->relationship('createdBy', 'name')
-                    ->default(Auth::id())
-                    ->dehydrated()
-                    ->disabled(fn () => Auth::user()->hasRole('Administrator') !== true),
-
-                DatePicker::make('post_103')
-                    ->label('Tanggal Post 103 (SAP)')
-                    ->placeholder('Belum di-Post')
-                    ->native(false)
-                    ->disabled(fn () => Auth::user()->hasRole('Administrator') !== true),
             ])
             ->columns(2)
             ->columnSpanFull()
-            ->collapsed()
+            ->collapsible()
             ->description('Informasi tambahan yang diisi otomatis oleh sistem.')
             ->disabled(fn (Get $get) => empty($get('search_po')));
     }
@@ -551,7 +569,7 @@ class DeliveryOrderReceiptForm
                                     },
                                 ])
                                 ->validationAttribute('Quantity')
-                                ->live(debounce: 300)
+                                ->live(onBlur: true)
                                 ->columnSpan(2)
                                 ->suffix(fn (Get $get): string => $get('uoi') ?? '')
                                 ->afterStateUpdated(function (Set $set, Get $get, $state) {
@@ -571,30 +589,47 @@ class DeliveryOrderReceiptForm
                                         return null;
                                     }
 
+                                    // 1. Ambil riwayat murni dari database (Kecuali baris yang sedang diedit ini)
                                     [$qtyPo, $netSaved] = static::computeNetForItem((int) $poId, (string) $itemNo, $record?->id);
 
-                                    $currentInput = (float) ($get('quantity') ?? 0);
-                                    $totalDiterima = $netSaved + $currentInput;
-                                    $sisaMatematis = $qtyPo - $totalDiterima;
+                                    // 2. Ambil input yang sedang diketik user di kotak "quantity" saat ini
+                                    $currentInput = (float) str_replace(',', '', (string) ($get('quantity') ?? 0));
+
+                                    // 3. Kalkulasi
+                                    // Diterima sebelumnya SAJA
+                                    $fmtNetSaved = number_format($netSaved);
+
+                                    // Sisa kuota SEBELUM input saat ini dimasukkan
+                                    $sisaAwal = $qtyPo - $netSaved;
+                                    $fmtSisaAwal = number_format($sisaAwal);
+
+                                    // Sisa kuota SETELAH input saat ini dimasukkan (untuk validasi visual)
+                                    $totalAkanDiterima = $netSaved + $currentInput;
+                                    $sisaSetelahInput = $qtyPo - $totalAkanDiterima;
 
                                     $fmtQtyPo = number_format($qtyPo);
-                                    $fmtTotalDiterima = number_format($totalDiterima);
-                                    $fmtSisaAbsolut = number_format(abs($sisaMatematis));
+                                    $fmtTotalAkanDiterima = number_format($totalAkanDiterima);
+                                    $fmtSisaAbsolut = number_format(abs($sisaSetelahInput));
 
-                                    if ($get('is_qty_tolerance') && $sisaMatematis < 0) {
+                                    // 4. Logika Pewarnaan & Peringatan
+                                    if ($get('is_qty_tolerance') && $sisaSetelahInput < 0) {
                                         $statusInfo = "<span style='color: #d97706; font-weight: bold;'>Toleransi Aktif: {$fmtSisaAbsolut} {$uoi}</span>";
                                     } else {
-                                        $colorSisa = $sisaMatematis < 0 ? '#dc2626' : ($sisaMatematis == 0 ? '#6b7280' : '#16a34a');
-                                        $statusLabel = $sisaMatematis < 0 ? 'OVER LIMIT' : 'Sisa';
+                                        $colorSisa = $sisaSetelahInput < 0 ? '#dc2626' : ($sisaSetelahInput == 0 ? '#6b7280' : '#f59e0b');
+                                        $statusLabel = $sisaSetelahInput < 0 ? 'OVER LIMIT' : 'Quantity Tersisa';
                                         $statusInfo = "<span style='color: {$colorSisa}; font-weight: bold;'>{$statusLabel}: {$fmtSisaAbsolut} {$uoi}</span>";
                                     }
 
-                                    $colorDiterima = ($totalDiterima >= $qtyPo) ? '#16a34a' : ($totalDiterima > 0 ? '#f59e0b' : '#6b7280');
+                                    $colorAkanDiterima = ($totalAkanDiterima >= $qtyPo) ? '#16a34a' : ($totalAkanDiterima > 0 ? '#16a34a' : '#6b7280');
 
+                                    // 5. Render HTML (Dengan tambahan info "Riwayat")
                                     return new HtmlString("
                                         <div style='margin-top: 4px; font-size: 0.8rem; line-height: 1.6;'>
-                                            <span style='color: #6b7280;'>PO Terbit: <b>{$fmtQtyPo} {$uoi}</b></span> |
-                                            <span style='color: {$colorDiterima}; font-weight: 600;'>Diterima: <b>{$fmtTotalDiterima} {$uoi}</b></span><br>
+                                            <span style='color: #4b5563;'>PO Terbit: <b>{$fmtQtyPo} {$uoi}</b></span> |
+                                            <span style='color: #4b5563;'>Riwayat Terima: <b>{$fmtNetSaved} {$uoi}</b></span><br>
+
+                                            <span style='color: {$colorAkanDiterima}; font-weight: 600;'>Riwayat + Input Saat Ini: <b>{$fmtTotalAkanDiterima} {$uoi}</b></span><br>
+
                                             {$statusInfo}
                                         </div>
                                     ");
@@ -640,7 +675,89 @@ class DeliveryOrderReceiptForm
                     ->addable(false)
                     ->reorderable(false)
                     ->deletable()
-                    ->defaultItems(0),
+                    ->defaultItems(0)
+                    ->mutateRelationshipDataBeforeCreateUsing(function (array $data): array {
+                        $quantity = (float) str_replace(',', '', (string) ($data['quantity'] ?? 0));
+
+                        $poId = $data['purchase_order_issued_id'] ?? null;
+                        $itemNo = $data['item_no'] ?? null;
+
+                        if ($poId && $itemNo) {
+                            // Tarik data PO langsung dari database
+                            $poItem = PurchaseOrderIssued::find($poId);
+
+                            // Hitung Harga Satuan Murni dari Total Amount PO
+                            $unitPrice = ($poItem && $poItem->qty_po > 0)
+                                ? ((float) $poItem->total_amount_in_lc / (float) $poItem->qty_po)
+                                : 0;
+
+                            [$qtyPo, $netSaved] = static::computeNetForItem((int) $poId, (string) $itemNo);
+                            $sisaKuota = $qtyPo - $netSaved;
+
+                            if ($quantity > $sisaKuota) {
+                                $qtyBisaDibayar = max(0, $sisaKuota);
+                                $data['total_amount_snapshot'] = $qtyBisaDibayar * $unitPrice;
+                            } else {
+                                $data['total_amount_snapshot'] = $quantity * $unitPrice;
+                            }
+
+                            // Opsional tapi disarankan: Update juga unit_price di array agar yang tersimpan di DB adalah harga murni dari PO
+                            $data['unit_price'] = $unitPrice;
+
+                        } else {
+                            // Fallback jika tidak ada PO
+                            $unitPrice = (float) ($data['unit_price'] ?? 0);
+                            $data['total_amount_snapshot'] = $quantity * $unitPrice;
+                        }
+
+                        // Kembalikan quantity murni (tanpa koma) ke database
+                        $data['quantity'] = $quantity;
+
+                        return $data;
+                    })
+
+                    // 🌟 2. MUTATOR SAAT EDIT (SAVE)
+                    ->mutateRelationshipDataBeforeSaveUsing(function (array $data, $record): array {
+                        $quantity = (float) str_replace(',', '', (string) ($data['quantity'] ?? 0));
+
+                        $poId = $data['purchase_order_issued_id'] ?? null;
+                        $itemNo = $data['item_no'] ?? null;
+
+                        // Ambil ID detail untuk diexclude agar tidak terhitung ganda
+                        $excludeId = $record ? $record->id : null;
+
+                        if ($poId && $itemNo) {
+                            // Tarik data PO langsung dari database
+                            $poItem = PurchaseOrderIssued::find($poId);
+
+                            // Hitung Harga Satuan Murni dari Total Amount PO
+                            $unitPrice = ($poItem && $poItem->qty_po > 0)
+                                ? ((float) $poItem->total_amount_in_lc / (float) $poItem->qty_po)
+                                : 0;
+
+                            [$qtyPo, $netSaved] = static::computeNetForItem((int) $poId, (string) $itemNo, $excludeId);
+                            $sisaKuota = $qtyPo - $netSaved;
+
+                            if ($quantity > $sisaKuota) {
+                                $qtyBisaDibayar = max(0, $sisaKuota);
+                                $data['total_amount_snapshot'] = $qtyBisaDibayar * $unitPrice;
+                            } else {
+                                $data['total_amount_snapshot'] = $quantity * $unitPrice;
+                            }
+
+                            $data['unit_price'] = $unitPrice;
+
+                        } else {
+                            // Fallback jika tidak ada PO
+                            $unitPrice = (float) ($data['unit_price'] ?? 0);
+                            $data['total_amount_snapshot'] = $quantity * $unitPrice;
+                        }
+
+                        // Kembalikan quantity murni (tanpa koma) ke database
+                        $data['quantity'] = $quantity;
+
+                        return $data;
+                    }),
 
                 EmptyState::make('Belum ada Nomor PO yang dipilih')
                     ->description('Silakan cari dan pilih Nomor PO pada bagian Informasi Kedatangan untuk menampilkan daftar material.')

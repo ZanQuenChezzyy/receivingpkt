@@ -86,11 +86,23 @@ class DeliveryOrderReceiptsTable
                         ->listWithLineBreaks() // Menampilkan data array berbaris ke bawah
                         ->bulleted() // Menambahkan titik (bullet)
                         ->limitList(2) // Batasi tampilan awal misal 2 baris agar tabel tidak terlalu panjang
+                        ->limit(15)
                         ->expandableLimitedList() // Bisa diklik "View more"
                         ->searchable(query: function (Builder $query, string $search) {
                             $query->whereHas('deliveryOrderReceiptDetails', function ($q) use ($search) {
                                 $q->where('description', 'like', "%{$search}%");
                             });
+                        })
+                        ->tooltip(function ($record) {
+                            $details = $record->deliveryOrderReceiptDetails;
+
+                            $htmlList = '';
+                            foreach ($details->pluck('description') as $index => $desc) {
+                                $number = $index + 1;
+                                $htmlList .= "{$number}. {$desc}<br>"; // Gunakan <br> sebagai enter HTML
+                            }
+
+                            return new HtmlString($htmlList);
                         }),
 
                     TextColumn::make('quantity_item')
@@ -139,16 +151,23 @@ class DeliveryOrderReceiptsTable
                         ->label('Termin / Tahapan')
                         ->placeholder('Tidak Ada Tahapan')
                         ->badge()
-                        ->default('') // Wajib ditambah agar null tetap diproses
-                        ->formatStateUsing(function ($state) {
+                        ->default('')
+                        // 🌟 TAMBAHKAN $record DI SINI
+                        ->formatStateUsing(function ($state, $record) {
                             if (empty($state)) {
                                 return 'Default';
                             }
                             if (str_contains(strtoupper($state), 'DOF')) {
                                 return 'Surat DOF';
                             }
+                            if (str_contains(strtoupper($state), 'TERMIN')) {
+                                // Ambil nilai persentase, gunakan (float) agar angka 15.00 menjadi 15 (lebih rapi)
+                                $percentage = (float) $record->termin_percentage;
 
-                            return $state; // Untuk Termin 1, Termin 2, dsb.
+                                return "{$state}: {$percentage}%";
+                            }
+
+                            return $state;
                         })
                         ->color(function ($state) {
                             if (empty($state)) {

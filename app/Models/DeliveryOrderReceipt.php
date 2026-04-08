@@ -23,11 +23,15 @@ class DeliveryOrderReceipt extends Model
         'document_code',
         'status',
         'post_103',
+        'termin_percentage',
+        'dof_number',
+        'description',
     ];
 
     protected $casts = [
         'received_date' => 'date',
         'post_103' => 'date',
+        'termin_percentage' => 'integer',
     ];
 
     public function receivedBy(): BelongsTo

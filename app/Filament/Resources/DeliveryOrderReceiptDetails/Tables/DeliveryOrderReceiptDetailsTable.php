@@ -98,7 +98,7 @@ class DeliveryOrderReceiptDetailsTable
                     TextColumn::make('locationReceiving.name')
                         ->label('Lokasi Penyimpanan')
                         ->icon('heroicon-m-map-pin')
-                        ->description(fn ($record) => $record->is_different_location ? 'Pindah dari Default' : 'Sesuai Default')
+                        ->description(fn ($record) => $record->is_different_location ? 'Berbeda Lokasi' : 'Lokasi Utama')
                         ->color(fn ($record) => $record->is_different_location ? 'warning' : 'gray')
                         ->searchable()
                         ->sortable(),
