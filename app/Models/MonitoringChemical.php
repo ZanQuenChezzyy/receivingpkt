@@ -6,7 +6,6 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Support\Carbon;
 
 class MonitoringChemical extends Model
 {
@@ -17,6 +16,9 @@ class MonitoringChemical extends Model
         'purchase_order_issued_id',
         'qc_by',
         'do_number',
+        'quantity',
+        'tahapan',
+        'received_by',
         'received_date',
         'location_id',
         'is_qty_tolerance',
@@ -39,16 +41,6 @@ class MonitoringChemical extends Model
         'has_update_progress' => 'boolean',
     ];
 
-    protected static function booted()
-    {
-        static::saving(function ($model) {
-            if ($model->tanggal_pengajuan_simala && $model->tanggal_terbit_coa) {
-                $model->leadtime_coa = Carbon::parse($model->tanggal_pengajuan_simala)
-                    ->diffInDays(Carbon::parse($model->tanggal_terbit_coa));
-            }
-        });
-    }
-
     public function purchaseOrder(): BelongsTo
     {
         return $this->belongsTo(PurchaseOrderIssued::class, 'purchase_order_issued_id');
@@ -57,5 +49,10 @@ class MonitoringChemical extends Model
     public function monitoringChemicalDetails(): HasMany
     {
         return $this->hasMany(MonitoringChemicalDetail::class);
+    }
+
+    public function receivedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'received_by', 'id');
     }
 }

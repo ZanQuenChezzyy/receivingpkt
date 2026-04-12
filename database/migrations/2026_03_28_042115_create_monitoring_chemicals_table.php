@@ -17,6 +17,9 @@ return new class extends Migration
             $table->foreignId('purchase_order_issued_id')->constrained('purchase_order_issued');
             $table->string('qc_by', 50);
             $table->string('do_number', 15)->nullable()->index();
+            $table->decimal('quantity', 15, 0)->nullable();
+            $table->string('tahapan', 100)->nullable();
+            $table->foreignId('received_by')->constrained('users');
             $table->date('received_date')->nullable()->index();
             $table->foreignId('location_id')->nullable()->constrained('location_receivings');
             $table->boolean('is_qty_tolerance')->default(false);

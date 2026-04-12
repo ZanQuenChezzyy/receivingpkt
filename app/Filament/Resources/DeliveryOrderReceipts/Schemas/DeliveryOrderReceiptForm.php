@@ -104,7 +104,7 @@ class DeliveryOrderReceiptForm
                 })
                 ->afterStateUpdated(function (Set $set, Get $get, $state) {
                     if ($state === 'termin') {
-                        $set('stage', null);
+                        $set('stage', 'TERMIN 1');
                         $set('termin_percentage', null);
                         $set('dof_number', null);
                         self::updateDocumentCode($set, $get);
@@ -363,16 +363,37 @@ class DeliveryOrderReceiptForm
                 ->placeholder('Contoh: 20')
                 ->required()
                 ->rules([
-                    fn (Get $get): \Closure => function (string $attribute, $value, \Closure $fail) use ($get) {
-                        $percentageInput = (float) $value;
+                    // 🌟 TAMBAHKAN $record DI SINI
+                    fn (Get $get, $record): \Closure => function (string $attribute, $value, \Closure $fail) use ($get) {
+                        $valString = str_replace(',', '.', (string) $value);
+
+                        if (! is_numeric($valString)) {
+                            $fail('Format persentase tidak valid. Masukkan angka (contoh: 15,5).');
+
+                            return;
+                        }
+
+                        $percentageInput = (float) $valString;
+
+                        if ($percentageInput <= 0 || $percentageInput > 100) {
+                            $fail('Persentase harus antara 0.01 hingga 100%.');
+
+                            return;
+                        }
+
                         $details = $get('deliveryOrderReceiptDetails') ?? [];
 
                         foreach ($details as $detail) {
                             $poId = $detail['purchase_order_issued_id'] ?? null;
                             $itemNo = $detail['item_no'] ?? null;
 
+                            // 🌟 AMBIL ID DETAIL UNTUK DIKECUALIKAN SAAT EDIT
+                            $detailId = $detail['id'] ?? null;
+
                             if ($poId && $itemNo) {
-                                [$qtyPo, $netSaved] = static::computeNetForItem((int) $poId, (string) $itemNo);
+                                // 🌟 MASUKKAN $detailId SEBAGAI ARGUMEN KETIGA
+                                [$qtyPo, $netSaved] = static::computeNetForItem((int) $poId, (string) $itemNo, $detailId);
+
                                 $sisaQty = $qtyPo - $netSaved;
                                 $qtyYangDiminta = ($qtyPo * $percentageInput) / 100;
 
@@ -388,7 +409,9 @@ class DeliveryOrderReceiptForm
                 ])
                 ->live(onBlur: true)
                 ->afterStateUpdated(function (Set $set, Get $get, $state) {
-                    $percentage = (float) $state;
+                    $valString = str_replace(',', '.', (string) $state);
+                    $percentage = (float) $valString;
+
                     if ($percentage <= 0) {
                         return;
                     }
@@ -401,7 +424,9 @@ class DeliveryOrderReceiptForm
                             if ($poItem) {
                                 $qtyPo = (float) $poItem->qty_po;
                                 $calcQty = ($qtyPo * $percentage) / 100;
+
                                 $set("deliveryOrderReceiptDetails.{$key}.quantity", $calcQty);
+
                                 $unitPrice = (float) ($detail['unit_price'] ?? 0);
                                 $set("deliveryOrderReceiptDetails.{$key}.total_amount_snapshot", $calcQty * $unitPrice);
                             }
@@ -513,7 +538,7 @@ class DeliveryOrderReceiptForm
                             Hidden::make('abc_indicator'),
                             Hidden::make('requisitioner'),
                             Hidden::make('unit_price'),
-                            Hidden::make('total_amount_snapshot'),
+                            TextInput::make('total_amount_snapshot'),
                             Hidden::make('uoi'),
 
                             TextInput::make('material_code')
@@ -621,12 +646,12 @@ class DeliveryOrderReceiptForm
                                     }
 
                                     $colorAkanDiterima = ($totalAkanDiterima >= $qtyPo) ? '#16a34a' : ($totalAkanDiterima > 0 ? '#16a34a' : '#6b7280');
+                                    $colorRiwayat = ($netSaved > 0) ? '#4090ff' : '#4b5563';
 
-                                    // 5. Render HTML (Dengan tambahan info "Riwayat")
                                     return new HtmlString("
                                         <div style='margin-top: 4px; font-size: 0.8rem; line-height: 1.6;'>
                                             <span style='color: #4b5563;'>PO Terbit: <b>{$fmtQtyPo} {$uoi}</b></span> |
-                                            <span style='color: #4b5563;'>Riwayat Terima: <b>{$fmtNetSaved} {$uoi}</b></span><br>
+                                            <span style='color: {$colorRiwayat};'>Riwayat Terima: <b>{$fmtNetSaved} {$uoi}</b></span><br>
 
                                             <span style='color: {$colorAkanDiterima}; font-weight: 600;'>Riwayat + Input Saat Ini: <b>{$fmtTotalAkanDiterima} {$uoi}</b></span><br>
 
@@ -677,16 +702,15 @@ class DeliveryOrderReceiptForm
                     ->deletable()
                     ->defaultItems(0)
                     ->mutateRelationshipDataBeforeCreateUsing(function (array $data): array {
-                        $quantity = (float) str_replace(',', '', (string) ($data['quantity'] ?? 0));
+                        // 🌟 Ubah koma (,) menjadi titik (.) agar jadi pecahan, lalu cast ke float
+                        $quantity = (float) str_replace(',', '.', (string) ($data['quantity'] ?? 0));
 
                         $poId = $data['purchase_order_issued_id'] ?? null;
                         $itemNo = $data['item_no'] ?? null;
 
                         if ($poId && $itemNo) {
-                            // Tarik data PO langsung dari database
                             $poItem = PurchaseOrderIssued::find($poId);
 
-                            // Hitung Harga Satuan Murni dari Total Amount PO
                             $unitPrice = ($poItem && $poItem->qty_po > 0)
                                 ? ((float) $poItem->total_amount_in_lc / (float) $poItem->qty_po)
                                 : 0;
@@ -701,36 +725,27 @@ class DeliveryOrderReceiptForm
                                 $data['total_amount_snapshot'] = $quantity * $unitPrice;
                             }
 
-                            // Opsional tapi disarankan: Update juga unit_price di array agar yang tersimpan di DB adalah harga murni dari PO
                             $data['unit_price'] = $unitPrice;
-
                         } else {
-                            // Fallback jika tidak ada PO
                             $unitPrice = (float) ($data['unit_price'] ?? 0);
                             $data['total_amount_snapshot'] = $quantity * $unitPrice;
                         }
 
-                        // Kembalikan quantity murni (tanpa koma) ke database
                         $data['quantity'] = $quantity;
 
                         return $data;
                     })
-
-                    // 🌟 2. MUTATOR SAAT EDIT (SAVE)
                     ->mutateRelationshipDataBeforeSaveUsing(function (array $data, $record): array {
-                        $quantity = (float) str_replace(',', '', (string) ($data['quantity'] ?? 0));
+                        // 🌟 Ubah koma (,) menjadi titik (.) agar jadi pecahan, lalu cast ke float
+                        $quantity = (float) str_replace(',', '.', (string) ($data['quantity'] ?? 0));
 
                         $poId = $data['purchase_order_issued_id'] ?? null;
                         $itemNo = $data['item_no'] ?? null;
-
-                        // Ambil ID detail untuk diexclude agar tidak terhitung ganda
                         $excludeId = $record ? $record->id : null;
 
                         if ($poId && $itemNo) {
-                            // Tarik data PO langsung dari database
                             $poItem = PurchaseOrderIssued::find($poId);
 
-                            // Hitung Harga Satuan Murni dari Total Amount PO
                             $unitPrice = ($poItem && $poItem->qty_po > 0)
                                 ? ((float) $poItem->total_amount_in_lc / (float) $poItem->qty_po)
                                 : 0;
@@ -746,14 +761,11 @@ class DeliveryOrderReceiptForm
                             }
 
                             $data['unit_price'] = $unitPrice;
-
                         } else {
-                            // Fallback jika tidak ada PO
                             $unitPrice = (float) ($data['unit_price'] ?? 0);
                             $data['total_amount_snapshot'] = $quantity * $unitPrice;
                         }
 
-                        // Kembalikan quantity murni (tanpa koma) ke database
                         $data['quantity'] = $quantity;
 
                         return $data;

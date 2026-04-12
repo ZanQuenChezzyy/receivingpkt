@@ -15,11 +15,14 @@ class MonitoringChemicalDetailsTable
     {
         return $table
             ->columns([
-                TextColumn::make('chemical_monitoring_id')
-                    ->numeric()
+                TextColumn::make('monitoringChemical.purchaseOrder.purchase_order_no')
+                    ->label('Purchase Order No')
                     ->sortable(),
-                TextColumn::make('tahapan_qc_id')
-                    ->numeric()
+                TextColumn::make('monitoringChemical.purchaseOrder.description')
+                    ->label('Keterangan')
+                    ->sortable(),
+                TextColumn::make('chemicalQcTuv.tahapan_name')
+                    ->label('Tahapan QC')
                     ->sortable(),
                 TextColumn::make('quantity_received')
                     ->numeric()

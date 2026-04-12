@@ -5,6 +5,7 @@ namespace App\Filament\Resources\DeliveryOrderReceipts\Pages;
 use App\Filament\Resources\DeliveryOrderReceipts\DeliveryOrderReceiptResource;
 use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ListRecords;
+use Filament\Support\Icons\Heroicon;
 
 class ListDeliveryOrderReceipts extends ListRecords
 {
@@ -13,7 +14,9 @@ class ListDeliveryOrderReceipts extends ListRecords
     protected function getHeaderActions(): array
     {
         return [
-            CreateAction::make(),
+            CreateAction::make()
+                ->label('Tambah Purchase Order Terbit')
+                ->icon(Heroicon::PlusCircle),
         ];
     }
 }

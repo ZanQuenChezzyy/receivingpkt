@@ -20,8 +20,13 @@ class MonitoringChemicalDetail extends Model
         'quantity_received' => 'integer',
     ];
 
+    public function monitoringChemical(): BelongsTo
+    {
+        return $this->belongsTo(MonitoringChemical::class, 'monitoring_chemical_id', 'id');
+    }
+
     public function chemicalQcTuv(): BelongsTo
     {
-        return $this->belongsTo(ChemicalQcTuv::class, 'chemical_qc_tuv_id');
+        return $this->belongsTo(ChemicalQcTuv::class, 'chemical_qc_tuv_id', 'id');
     }
 }
