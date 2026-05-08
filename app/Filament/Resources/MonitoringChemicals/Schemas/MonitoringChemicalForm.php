@@ -7,6 +7,7 @@ use App\Models\LocationReceiving;
 use App\Models\MonitoringChemical;
 use App\Models\MonitoringChemicalDetail;
 use App\Models\PurchaseOrderIssued;
+use Filament\Actions\Action;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Hidden;
 use Filament\Forms\Components\Repeater;
@@ -16,6 +17,7 @@ use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Forms\Components\ToggleButtons;
 use Filament\Infolists\Components\TextEntry;
+use Filament\Notifications\Notification;
 use Filament\Schemas\Components\EmptyState;
 use Filament\Schemas\Components\Fieldset;
 use Filament\Schemas\Components\Grid;
@@ -32,6 +34,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\HtmlString;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 
 class MonitoringChemicalForm
 {
@@ -50,7 +53,6 @@ class MonitoringChemicalForm
                             ->description('Silakan cari dan pilih Nomor PO pada bagian Informasi Kedatangan untuk menampilkan daftar material.')
                             ->icon(Heroicon::OutlinedCursorArrowRays)
                             ->contained(true)
-                            // Catatan: Saya sesuaikan nama field 'search_po' menjadi 'purchase_order_issued_id' agar sesuai dengan form kita
                             ->visible(fn (Get $get, $record): bool => blank($get('purchase_order_issued_id')) && $record === null),
                         self::getTuvDetailsSection(),
                         self::getStatusSection(),
@@ -91,7 +93,6 @@ class MonitoringChemicalForm
             ->icon(Heroicon::OutlinedTruck)
             ->description('Pilih kategori dan PO untuk memulai proses input kedatangan.')
             ->schema([
-                // 1. Pilih Kategori
                 ToggleButtons::make('material_category')
                     ->label('Kategori Material')
                     ->options([
@@ -130,7 +131,6 @@ class MonitoringChemicalForm
                         $set('is_qty_tolerance', false);
                     }),
 
-                // 2. Pelaksana QC
                 ToggleButtons::make('qc_by')
                     ->label('Tujuan QC')
                     ->key(fn (Get $get) => 'qc_by_'.($get('material_category') ?? 'none'))
@@ -153,7 +153,6 @@ class MonitoringChemicalForm
             ])->columns(2);
     }
 
-    // 🌟 HELPER 1: Ekstraksi Select Purchase Order
     protected static function getPurchaseOrderSelect(): Select
     {
         return Select::make('purchase_order_issued_id')
@@ -186,17 +185,13 @@ class MonitoringChemicalForm
                     return;
                 }
 
-                // Tarik semua tahapan TUV milik PO ini
                 $tuvs = ChemicalQcTuv::where('purchase_order_issued_id', $state)->orderBy('id')->get();
                 $repeaterData = [];
-                $recordId = $get('id'); // Ambil ID form utama jika sedang di halaman Edit
+                $recordId = $get('id');
 
-                // Looping tahapan dan hitung SISA QTY-nya
                 foreach ($tuvs as $tuv) {
-                    // Hitung riwayat TUV ini yang sudah terpakai di record kedatangan sebelumnya
                     $riwayatTerpakai = MonitoringChemicalDetail::where('chemical_qc_tuv_id', $tuv->id)
                         ->when($recordId, function ($query) use ($recordId) {
-                            // Abaikan jumlah dari record yang sedang diedit ini agar tidak double count
                             $query->whereHas('monitoringChemical', function ($q) use ($recordId) {
                                 $q->where('id', '!=', $recordId);
                             });
@@ -206,36 +201,29 @@ class MonitoringChemicalForm
                     $targetTuv = (float) $tuv->qty_qc_tuv;
                     $sisa = $targetTuv - (float) $riwayatTerpakai;
 
-                    // 🌟 HANYA MASUKKAN KE FORM REPEATER JIKA MASIH ADA SISA KUOTA (> 0)
                     if ($sisa > 0) {
                         $repeaterData[(string) Str::uuid()] = [
                             'chemical_qc_tuv_id' => (string) $tuv->id,
-                            'quantity_received' => $sisa, // Masukkan SISA-nya, bukan Target aslinya!
+                            'quantity_received' => $sisa,
                         ];
                     }
                 }
 
-                // Tembakkan data sisa ke dalam form Repeater
                 $set('monitoringChemicalDetails', $repeaterData);
-
-                // 🌟 PICU PERHITUNGAN ULANG MASTER QTY
                 self::sumRepeaterToMainQty($set, $set, $repeaterData);
             })
             ->columnSpanFull();
     }
 
-    // Ubah tipe return menjadi array agar bisa langsung disisipkan ke schema pemanggil
     protected static function getDetailKedatanganGroup(): array
     {
         return [
-            // 🌟 1. EMPTY STATE (Muncul saat PO BELUM dipilih)
             EmptyState::make('Belum Ada PO yang Dipilih')
                 ->description('Silakan pilih Kategori dan cari Nomor Purchase Order di atas untuk mulai mengisi form kedatangan.')
                 ->icon(Heroicon::OutlinedDocumentMagnifyingGlass)
                 ->visible(fn (Get $get, $record) => blank($get('purchase_order_issued_id')) && $record === null)
                 ->columnSpanFull(),
 
-            // 🌟 2. GROUP INPUT (Muncul saat PO SUDAH dipilih)
             Group::make()
                 ->visible(fn (Get $get, $record) => filled($get('purchase_order_issued_id')) || $record !== null)
                 ->schema([
@@ -302,21 +290,10 @@ class MonitoringChemicalForm
                                 $totalPo = $poItem ? (float) $poItem->qty_po : 0;
 
                                 $totalTuvTarget = ChemicalQcTuv::where('purchase_order_issued_id', $poId)->sum('qty_qc_tuv');
-
-                                if ($totalTuvTarget > 0) {
-                                    $baseMaxAllowed = (float) $totalTuvTarget;
-                                } else {
-                                    $baseMaxAllowed = $totalPo;
-                                }
+                                $baseMaxAllowed = $totalTuvTarget > 0 ? (float) $totalTuvTarget : $totalPo;
 
                                 $isToleranceActive = (bool) ($get('is_qty_tolerance') ?? false);
-
-                                if ($isToleranceActive) {
-                                    $toleranceAmount = $baseMaxAllowed * 0.10;
-                                    $finalMaxAllowed = $baseMaxAllowed + $toleranceAmount;
-                                } else {
-                                    $finalMaxAllowed = $baseMaxAllowed;
-                                }
+                                $finalMaxAllowed = $isToleranceActive ? ($baseMaxAllowed + ($baseMaxAllowed * 0.10)) : $baseMaxAllowed;
 
                                 $recordId = $get('id');
                                 $historyQty = MonitoringChemical::where('purchase_order_issued_id', $poId)
@@ -383,51 +360,41 @@ class MonitoringChemicalForm
         return Section::make('Summary PO (Keseluruhan Item)')
             ->icon(Heroicon::OutlinedTableCells)
             ->visible(function (Get $get, $record) {
-                $hasPo = filled($get('purchase_order_issued_id')) || $record !== null;
-
-                return $hasPo;
+                return filled($get('purchase_order_issued_id')) || $record !== null;
             })
             ->schema([
                 TextEntry::make('summary_table')
                     ->hiddenLabel()
+                    // 🌟 REAKTIVITAS FILAMENT V4
                     ->extraAttributes(fn (Get $get) => [
-                        'data-qty' => $get('quantity'),
+                        'wire:key' => 'summary-po-'.($get('quantity') ?? '0'),
                     ])
                     ->getStateUsing(function (Get $get, $record) {
-                        // 1. Amankan ID PO
                         $poId = $get('purchase_order_issued_id') ?? ($record ? $record->purchase_order_issued_id : null);
-
                         if (! $poId) {
                             return new HtmlString('<p class="text-sm text-gray-500 italic">Data PO tidak ditemukan.</p>');
                         }
 
                         $selectedPo = PurchaseOrderIssued::find($poId);
                         if (! $selectedPo) {
-                            return '';
+                            return new HtmlString('');
                         }
 
                         $rawInputQty = $get('quantity');
-
                         if ($rawInputQty !== null && $rawInputQty !== '') {
-                            // Ambil dari inputan user yang sedang aktif
                             $inputQtySementara = (float) str_replace(',', '.', (string) $rawInputQty);
                         } else {
-                            // Ambil dari database jika form baru dibuka dan user belum mengetik apa-apa
                             $inputQtySementara = $record ? (float) $record->quantity : 0;
                         }
 
                         $recordId = $record ? $record->id : null;
-
                         $allItems = PurchaseOrderIssued::where('purchase_order_no', $selectedPo->purchase_order_no)
                             ->orderBy('item_no')
                             ->get();
 
-                        // ... [Mulai dari sini, kode HTML tabelnya TETAP SAMA persis seperti sebelumnya] ...
                         $html = '<div class="fi-ta-content divide-y divide-gray-200 overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-gray-950/5 dark:divide-gray-700 dark:bg-gray-900 dark:ring-white/10">';
                         $html .= '<div class="overflow-x-auto">';
                         $html .= '<table class="w-full table-auto divide-y divide-gray-200 dark:divide-gray-700">';
-
-                        // ... Header ...
                         $html .= '<thead class="bg-gray-50 dark:bg-white/5">
                                     <tr>
                                         <th class="px-3 py-2.5 text-left text-sm font-semibold text-gray-950 dark:text-white whitespace-nowrap">Item No</th>
@@ -438,23 +405,18 @@ class MonitoringChemicalForm
                                         <th class="px-3 py-2.5 text-right text-sm font-semibold text-gray-950 dark:text-white whitespace-nowrap">Sisa Qty</th>
                                     </tr>
                                 </thead>';
-
                         $html .= '<tbody class="divide-y divide-gray-200 dark:divide-gray-700">';
 
-                        // ... Looping ...
                         foreach ($allItems as $item) {
                             $totalDiterimaRiwayat = MonitoringChemical::where('purchase_order_issued_id', $item->id)
                                 ->when($recordId, fn ($q) => $q->where('id', '!=', $recordId))
                                 ->sum('quantity');
 
                             $qtySaatIni = ($item->id == $poId) ? $inputQtySementara : 0;
-
                             $totalKeseluruhan = $totalDiterimaRiwayat + $qtySaatIni;
-
                             $qtyPoFloat = (float) $item->qty_po;
                             $sisa = $qtyPoFloat - $totalKeseluruhan;
 
-                            // ... Logika warna dan render baris (seperti sebelumnya) ...
                             $colorClass = '';
                             $badgeClass = '';
                             if ($sisa <= 0) {
@@ -473,13 +435,11 @@ class MonitoringChemicalForm
                             $fmtSisa = rtrim(rtrim(number_format($sisa, 2, ',', '.'), '0'), ',');
 
                             $saatIniColor = $qtySaatIni > 0 ? 'text-primary-600 dark:text-primary-400 font-bold' : 'text-gray-400';
-
                             $shortDescription = Str::limit($item->description, 20, '...');
                             $escapedDescription = htmlspecialchars($item->description, ENT_QUOTES, 'UTF-8');
 
                             $html .= "<tr class='hover:bg-gray-50 dark:hover:bg-white/5 transition duration-75'>";
                             $html .= "<td class='px-3 py-3 text-sm text-gray-500 dark:text-gray-400 whitespace-nowrap'>{$item->item_no}</td>";
-
                             $html .= "<td class='px-3 py-3 text-sm text-gray-950 dark:text-white font-medium'>";
                             if (strlen($item->description) > 20) {
                                 $html .= "<span x-data x-tooltip=\"'{$escapedDescription}'\" class='cursor-help border-b border-dashed border-gray-300 dark:border-gray-600'>{$shortDescription}</span>";
@@ -487,11 +447,9 @@ class MonitoringChemicalForm
                                 $html .= "<span>{$item->description}</span>";
                             }
                             $html .= '</td>';
-
                             $html .= "<td class='px-3 py-3 text-sm text-right text-gray-500 dark:text-gray-400 whitespace-nowrap'>{$fmtPo} {$item->uoi}</td>";
                             $html .= "<td class='px-3 py-3 text-sm text-right font-semibold text-success-600 dark:text-success-400 whitespace-nowrap'>{$fmtTerimaRiwayat} {$item->uoi}</td>";
                             $html .= "<td class='px-3 py-3 text-sm text-right {$saatIniColor} whitespace-nowrap'>+ {$fmtSaatIni} {$item->uoi}</td>";
-
                             $html .= "<td class='px-3 py-3 text-sm text-right whitespace-nowrap'>";
                             if ($badgeClass !== '') {
                                 $html .= "<span class='{$badgeClass}'>{$fmtSisa} {$item->uoi}</span>";
@@ -528,7 +486,7 @@ class MonitoringChemicalForm
                 DatePicker::make('tanggal_pengambilan_sample')
                     ->label('Pengambilan Sample')
                     ->native(false)
-                    ->live(onBlur: true) // 🌟 TAMBAHAN: Jadikan live agar memicu pengecekan status
+                    ->live(onBlur: true)
                     ->afterStateUpdated(fn (Set $set, Get $get) => self::updateLeadtimeAndStatus($set, $get)),
 
                 DatePicker::make('tanggal_terbit_coa')
@@ -557,7 +515,6 @@ class MonitoringChemicalForm
             ]);
     }
 
-    // 🌟 HELPER 1: EMPTY STATE
     protected static function getTuvEmptyState(): EmptyState
     {
         return EmptyState::make('Data TUV Tidak Tersedia atau Sudah Lunas')
@@ -582,7 +539,6 @@ class MonitoringChemicalForm
                 }
 
                 $tuvs = ChemicalQcTuv::where('purchase_order_issued_id', $poId)->get();
-
                 if ($tuvs->isEmpty()) {
                     return true;
                 }
@@ -607,7 +563,6 @@ class MonitoringChemicalForm
             });
     }
 
-    // 🌟 HELPER 2: REPEATER
     protected static function getTuvRepeater(): Repeater
     {
         return Repeater::make('monitoringChemicalDetails')
@@ -616,6 +571,29 @@ class MonitoringChemicalForm
             ->addActionLabel('Tambah QC TUV')
             ->defaultItems(0)
             ->live()
+            ->deleteAction(
+                fn (Action $action) => $action
+                    // 🌟 PENYEMPURNAAN DELETE ACTION (Soft Delete DB Pertama)
+                    ->before(function (array $arguments, Repeater $component) {
+                        $itemData = $component->getRawItemState($arguments['item']);
+                        $tuvId = $itemData['chemical_qc_tuv_id'] ?? null;
+
+                        if ($tuvId) {
+                            MonitoringChemicalDetail::where('chemical_qc_tuv_id', $tuvId)->delete();
+                            ChemicalQcTuv::where('id', $tuvId)->delete();
+                        }
+                    })
+                    ->after(function (Set $set, Get $get) {
+                        $detailsTerbaru = $get('monitoringChemicalDetails') ?? [];
+                        self::sumRepeaterToMainQty($set, $get, $detailsTerbaru);
+
+                        // Pancing update PO ID untuk keamanan ekstra
+                        $poId = $get('../../purchase_order_issued_id');
+                        if ($poId) {
+                            $set('../../purchase_order_issued_id', clone $poId);
+                        }
+                    })
+            )
             ->schema([
                 Select::make('chemical_qc_tuv_id')
                     ->label('QC TUV')
@@ -629,10 +607,59 @@ class MonitoringChemicalForm
                     ->required()
                     ->disableOptionsWhenSelectedInSiblingRepeaterItems()
                     ->live()
+                    // 🌟 VALIDASI SAAT MEMILIH DARI DROPDOWN
+                    ->rules([
+                        fn (Get $get): \Closure => function (string $attribute, $value, \Closure $fail) use ($get) {
+                            $poId = $get('../../purchase_order_issued_id');
+                            if (! $poId || ! $value) {
+                                return;
+                            }
+
+                            $tuvDipilih = ChemicalQcTuv::find($value);
+                            if (! $tuvDipilih) {
+                                return;
+                            }
+                            $qtyYangAkanMasuk = (float) $tuvDipilih->qty_qc_tuv;
+
+                            $poItem = PurchaseOrderIssued::find($poId);
+                            $totalPo = $poItem ? (float) $poItem->qty_po : 0;
+                            $isToleranceActive = (bool) ($get('../../is_qty_tolerance') ?? false);
+                            $maxAllowedPo = $isToleranceActive ? ($totalPo + ($totalPo * 0.10)) : $totalPo;
+
+                            $recordId = $get('../../id');
+                            $historyLama = MonitoringChemicalDetail::whereHas('chemicalQcTuv', function ($q) use ($poId) {
+                                $q->where('purchase_order_issued_id', $poId);
+                            })
+                                ->when($recordId, function ($q) use ($recordId) {
+                                    $q->where('monitoring_chemical_id', '!=', $recordId);
+                                })
+                                ->sum('quantity_received');
+
+                            preg_match('/monitoringChemicalDetails\.([^\.]+)\./', $attribute, $matches);
+                            $currentRowKey = $matches[1] ?? null;
+
+                            $detailsSekarang = $get('../../monitoringChemicalDetails') ?? [];
+                            $totalRepeaterSesiIniLainnya = 0;
+
+                            foreach ($detailsSekarang as $key => $item) {
+                                if ($key !== $currentRowKey) {
+                                    $totalRepeaterSesiIniLainnya += (float) str_replace(',', '', (string) ($item['quantity_received'] ?? '0'));
+                                }
+                            }
+
+                            $totalKeseluruhanSementara = $historyLama + $totalRepeaterSesiIniLainnya + $qtyYangAkanMasuk;
+
+                            if ($totalKeseluruhanSementara > $maxAllowedPo) {
+                                $sisaAman = $maxAllowedPo - ($historyLama + $totalRepeaterSesiIniLainnya);
+                                $fmtSisa = rtrim(rtrim(number_format($sisaAman, 2, '.', ','), '0'), '.');
+                                $fail("Gagal menambahkan! Memilih tahap ini akan membuat total melebihi batas PO. Sisa kuota aman: {$fmtSisa}.");
+                            }
+                        },
+                    ])
                     ->createOptionForm([
                         Section::make('Informasi QC TUV')
                             ->description('Detail tahapan pemeriksaan kualitas chemical.')
-                            ->aside() // Membuat label section di samping (opsional, keren untuk layar lebar)
+                            ->aside()
                             ->schema([
                                 Select::make('tahapan_name')
                                     ->label('Nama Tahapan')
@@ -641,7 +668,7 @@ class MonitoringChemicalForm
                                             "TAHAP {$angka} TUV" => "TAHAP {$angka} TUV",
                                         ])->toArray()
                                     )
-                                    ->searchable() // Agar user bisa ketik "10" langsung muncul Tahap 10
+                                    ->searchable()
                                     ->required(),
 
                                 TextInput::make('qty_qc_tuv')
@@ -649,16 +676,42 @@ class MonitoringChemicalForm
                                     ->numeric()
                                     ->required()
                                     ->prefix('QTY')
-                                    ->default(0),
+                                    ->default(0)
+                                    ->mask(RawJs::make('$money($input)'))
+                                    ->stripCharacters(','),
                             ])->columns(2),
                     ])
-                    ->createOptionUsing(function (array $data, Get $get): int {
+                    // 🌟 VALIDASI MODAL CREATE MENGGUNAKAN NOTIFICATION & EXCEPTION
+                    ->createOptionUsing(function (array $data, Get $get, Select $component): ?int {
                         $poId = $get('../../purchase_order_issued_id');
+
+                        if (! $poId) {
+                            Notification::make()->danger()->title('Gagal Membuat TUV')->body('Silakan pilih Purchase Order terlebih dahulu di form utama.')->send();
+
+                            return null;
+                        }
+
+                        $inputTuvQty = (float) str_replace(',', '', (string) $data['qty_qc_tuv']);
+                        $poItem = PurchaseOrderIssued::find($poId);
+                        $totalPo = $poItem ? (float) $poItem->qty_po : 0;
+                        $isToleranceActive = (bool) ($get('../../is_qty_tolerance') ?? false);
+                        $maxAllowedPo = $isToleranceActive ? ($totalPo + ($totalPo * 0.10)) : $totalPo;
+                        $existingTuvTotal = ChemicalQcTuv::where('purchase_order_issued_id', $poId)->sum('qty_qc_tuv');
+                        $sisaKuota = $maxAllowedPo - (float) $existingTuvTotal;
+
+                        if ($inputTuvQty > $sisaKuota) {
+                            $fmtSisa = rtrim(rtrim(number_format($sisaKuota, 2, '.', ','), '0'), '.');
+                            $ketTolerance = $isToleranceActive ? ' (sudah termasuk toleransi 10%)' : '';
+
+                            Notification::make()->danger()->title('Kuota TUV Tidak Mencukupi')->body("Sisa kuota untuk membuat Master TUV baru hanya {$fmtSisa} berdasarkan Total PO{$ketTolerance}. Input dibatalkan.")->send();
+
+                            throw ValidationException::withMessages(['qty_qc_tuv' => "Melebihi sisa kuota PO ({$fmtSisa})."]);
+                        }
 
                         $newTuv = ChemicalQcTuv::create([
                             'purchase_order_issued_id' => $poId,
                             'tahapan_name' => $data['tahapan_name'],
-                            'qty_qc_tuv' => (float) str_replace(',', '', (string) $data['qty_qc_tuv']),
+                            'qty_qc_tuv' => $inputTuvQty,
                         ]);
 
                         return $newTuv->id;
@@ -666,7 +719,7 @@ class MonitoringChemicalForm
                     ->editOptionForm([
                         Section::make('Informasi QC TUV')
                             ->description('Detail tahapan pemeriksaan kualitas chemical.')
-                            ->aside() // Membuat label section di samping (opsional, keren untuk layar lebar)
+                            ->aside()
                             ->schema([
                                 Select::make('tahapan_name')
                                     ->label('Nama Tahapan')
@@ -675,7 +728,7 @@ class MonitoringChemicalForm
                                             "TAHAP {$angka} TUV" => "TAHAP {$angka} TUV",
                                         ])->toArray()
                                     )
-                                    ->searchable() // Agar user bisa ketik "10" langsung muncul Tahap 10
+                                    ->searchable()
                                     ->required(),
 
                                 TextInput::make('qty_qc_tuv')
@@ -683,16 +736,52 @@ class MonitoringChemicalForm
                                     ->numeric()
                                     ->required()
                                     ->prefix('QTY')
-                                    ->default(0),
+                                    ->default(0)
+                                    ->mask(RawJs::make('$money($input)'))
+                                    ->stripCharacters(','),
                             ])->columns(2),
                     ])
+                    // 🌟 VALIDASI MODAL EDIT MENGGUNAKAN NOTIFICATION & EXCEPTION
+                    ->updateOptionUsing(function (array $data, int $state, Get $get) {
+                        $poId = $get('../../purchase_order_issued_id');
+                        if (! $poId) {
+                            return null;
+                        }
+
+                        $inputTuvQty = (float) str_replace(',', '', (string) $data['qty_qc_tuv']);
+                        $poItem = PurchaseOrderIssued::find($poId);
+                        $totalPo = $poItem ? (float) $poItem->qty_po : 0;
+                        $isToleranceActive = (bool) ($get('../../is_qty_tolerance') ?? false);
+                        $maxAllowedPo = $isToleranceActive ? ($totalPo + ($totalPo * 0.10)) : $totalPo;
+
+                        $existingTuvTotalLainnya = ChemicalQcTuv::where('purchase_order_issued_id', $poId)
+                            ->where('id', '!=', $state)
+                            ->sum('qty_qc_tuv');
+
+                        $sisaKuota = $maxAllowedPo - (float) $existingTuvTotalLainnya;
+
+                        if ($inputTuvQty > $sisaKuota) {
+                            $fmtSisa = rtrim(rtrim(number_format($sisaKuota, 2, '.', ','), '0'), '.');
+                            $ketTolerance = $isToleranceActive ? ' (termasuk toleransi 10%)' : '';
+
+                            Notification::make()->danger()->title('Gagal Mengubah TUV')->body("Maksimal QTY yang bisa Anda set untuk tahap ini adalah {$fmtSisa} berdasarkan sisa kuota PO{$ketTolerance}.")->send();
+
+                            throw ValidationException::withMessages(['qty_qc_tuv' => "Melebihi sisa kuota PO ({$fmtSisa})."]);
+                        }
+
+                        ChemicalQcTuv::where('id', $state)->update([
+                            'tahapan_name' => $data['tahapan_name'],
+                            'qty_qc_tuv' => $inputTuvQty,
+                        ]);
+
+                        return $state;
+                    })
                     ->afterStateUpdated(function (Set $set, Get $get, $state) {
                         if ($state) {
                             $tuv = ChemicalQcTuv::find($state);
                             if ($tuv) {
                                 $poId = $get('../../purchase_order_issued_id');
                                 $recordId = $get('../../id');
-
                                 $targetTuvQty = (float) $tuv->qty_qc_tuv;
 
                                 $riwayatTerpakai = MonitoringChemicalDetail::where('chemical_qc_tuv_id', $state)
@@ -702,7 +791,6 @@ class MonitoringChemicalForm
                                     ->sum('quantity_received');
 
                                 $sisaUntukTahapIni = $targetTuvQty - (float) $riwayatTerpakai;
-
                                 if ($sisaUntukTahapIni < 0) {
                                     $sisaUntukTahapIni = 0;
                                 }
@@ -737,11 +825,14 @@ class MonitoringChemicalForm
             ]);
     }
 
-    // 🌟 HELPER 3: SUMMARY RIWAYAT TEXT ENTRY
     protected static function getTuvSummaryTextEntry(): TextEntry
     {
         return TextEntry::make('summary_riwayat_tuv')
             ->hiddenLabel()
+            // 🌟 REAKTIVITAS FILAMENT V4
+            ->extraAttributes(fn (Get $get) => [
+                'wire:key' => 'tuv-summary-'.($get('quantity') ?? '0'),
+            ])
             ->visible(function (Get $get) {
                 $poId = $get('purchase_order_issued_id');
                 if (! $poId) {
@@ -753,7 +844,7 @@ class MonitoringChemicalForm
             ->getStateUsing(function (Get $get, $record) {
                 $poId = $get('purchase_order_issued_id');
                 if (! $poId) {
-                    return '';
+                    return new HtmlString('');
                 }
 
                 $po = PurchaseOrderIssued::find($poId);
@@ -784,6 +875,7 @@ class MonitoringChemicalForm
                     }
                 }
 
+                // 🌟 LOOP HANYA BARIS YANG AKTIF DI UI
                 $detailsSekarang = $get('monitoringChemicalDetails') ?? [];
                 $totalAkanDitambah = 0;
                 $htmlAkanDitambah = '';
@@ -858,16 +950,15 @@ class MonitoringChemicalForm
         return Section::make('Status Dokumen')
             ->visible(fn (Get $get, $record) => $get('material_category') !== 'Karung' && (filled($get('purchase_order_issued_id')) || $record !== null))
             ->schema([
-                // 🌟 TAMPILAN UI (Tidak masuk ke database)
                 TextEntry::make('doc_status_display')
                     ->label('Status')
                     ->inlineLabel()
                     ->getStateUsing(fn (Get $get) => $get('doc_status') ?? 'Outstanding')
-                    ->badge() // Ubah jadi desain Badge oval yang cantik
+                    ->badge()
                     ->color(fn (string $state): string => match ($state) {
-                        'Completed' => 'success',  // Hijau
-                        'Outstanding' => 'warning',  // Kuning/Orange
-                        'Rejected' => 'danger',   // Merah
+                        'Completed' => 'success',
+                        'Outstanding' => 'warning',
+                        'Rejected' => 'danger',
                         default => 'gray',
                     })
                     ->icon(fn (string $state): string => match ($state) {
@@ -906,7 +997,6 @@ class MonitoringChemicalForm
         }
     }
 
-    // Ganti fungsi ini di bagian bawah class
     public static function sumRepeaterToMainQty(Set $set, $getOrSet, $overrideDetails = null): void
     {
         $details = $overrideDetails ?? (is_callable($getOrSet) ? $getOrSet('../../monitoringChemicalDetails') : []);
@@ -915,7 +1005,6 @@ class MonitoringChemicalForm
         $tahapanTerlibat = [];
 
         foreach ($details as $item) {
-            // 🌟 PERBAIKAN BUG KOMA: Gunakan str_replace(',', '') bukan (',', '.')
             $qtyStr = str_replace(',', '', (string) ($item['quantity_received'] ?? '0'));
             $qty = (float) $qtyStr;
 
@@ -950,7 +1039,6 @@ class MonitoringChemicalForm
         $sampleDate = $get('tanggal_pengambilan_sample');
         $coaDate = $get('tanggal_terbit_coa');
 
-        // --- 1. HITUNG LEADTIME (Simala s.d COA) ---
         if ($simalaDate && $coaDate) {
             $diff = \Carbon\Carbon::parse($simalaDate)->diffInDays(\Carbon\Carbon::parse($coaDate));
             $set('leadtime_coa', $diff);
@@ -958,12 +1046,9 @@ class MonitoringChemicalForm
             $set('leadtime_coa', null);
         }
 
-        // --- 2. UPDATE DOCUMENT STATUS ---
-        // Jika KETIGA tanggal sudah terisi, maka status Completed
         if ($simalaDate && $sampleDate && $coaDate) {
             $set('doc_status', 'Completed');
         } else {
-            // Jika ada satu saja yang kosong, status kembali ke Outstanding
             $set('doc_status', 'Outstanding');
         }
     }

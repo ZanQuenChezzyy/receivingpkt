@@ -538,7 +538,7 @@ class DeliveryOrderReceiptForm
                             Hidden::make('abc_indicator'),
                             Hidden::make('requisitioner'),
                             Hidden::make('unit_price'),
-                            TextInput::make('total_amount_snapshot'),
+                            Hidden::make('total_amount_snapshot'),
                             Hidden::make('uoi'),
 
                             TextInput::make('material_code')

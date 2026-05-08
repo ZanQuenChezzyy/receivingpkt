@@ -398,7 +398,7 @@ class DeliveryOrderReceiptInfolist
                                             }
 
                                             // Format angka menjadi Rupiah (misal: Rp 1.500.000)
-                                            $fmtTotal = 'Rp '.number_format($total, 0, ',', '.');
+                                            $fmtTotal = 'Rp '.number_format($total, 2, ',', '.');
 
                                             $output[] = "<span class='text-sm text-gray-400'>{$mrp}: <strong class='text-success-400'>{$fmtTotal}</strong></span>";
                                         }
@@ -420,6 +420,30 @@ class DeliveryOrderReceiptInfolist
                                     ->getStateUsing(function ($record) {
                                         // Asumsi Anda menggunakan total_amount_snapshot di details untuk harga riil per penerimaan
                                         return $record->deliveryOrderReceiptDetails->sum('total_amount_snapshot');
+                                    }),
+
+                                TextEntry::make('total_po_summary')
+                                    ->label('Total Nilai Keseluruhan PO')
+                                    ->weight(FontWeight::ExtraBold)
+                                    ->color('info') // Gunakan warna berbeda (misal: biru/info) agar beda dengan nilai penerimaan
+                                    ->money('IDR', locale: 'id') // Format otomatis Rupiah
+                                    ->getStateUsing(function ($record) {
+                                        $details = $record->deliveryOrderReceiptDetails;
+
+                                        if ($details->isEmpty()) {
+                                            return 0;
+                                        }
+
+                                        // 1. Ambil ID PO yang unik dari detail penerimaan ini
+                                        // Menggunakan unique() karena satu DO bisa memuat beberapa item dari PO yang sama.
+                                        // Kita hanya ingin menjumlahkan total PO-nya satu kali saja.
+                                        $poIds = $details->pluck('purchase_order_issued_id')->unique()->filter();
+
+                                        // 2. Jumlahkan field total_amount_in_lc dari tabel PurchaseOrderIssued
+                                        $totalPoValue = PurchaseOrderIssued::whereIn('id', $poIds)
+                                            ->sum('total_amount_in_lc');
+
+                                        return (float) $totalPoValue;
                                     }),
                             ]),
                         ]),
